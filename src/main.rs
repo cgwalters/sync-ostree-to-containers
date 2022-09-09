@@ -16,19 +16,21 @@ static ARCHITECTURES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 #[derive(Debug, Parser)]
-struct Opt {
+struct RepoOpts {
     /// Path to OSTree repository
-    #[clap(long, value_parser, global = true)]
+    #[clap(long, value_parser, required = true)]
     repo: Utf8PathBuf,
 
     /// Ostree remote name
-    #[clap(long, value_parser, global = true)]
+    #[clap(long, value_parser, required = true)]
     remote: String,
+}
 
-    /// The ostree container format version
-    #[clap(long, default_value = "1")]
-    format_version: u32,
-
+#[derive(Debug, Parser)]
+struct Opt {
+    // /// The ostree container format version
+    // #[clap(long, default_value = "1")]
+    // format_version: u32,
     #[clap(subcommand)]
     cmd: Cmd,
 }
@@ -37,6 +39,9 @@ struct Opt {
 enum Cmd {
     /// Fetch multiple ostree refs
     Fetch {
+        #[clap(flatten)]
+        repo: RepoOpts,
+
         /// A refspec that supports globs; for example,
         /// fedora/36/*/updates
         refs: String,
@@ -46,17 +51,34 @@ enum Cmd {
 impl Opt {
     fn run(self) -> Result<()> {
         match &self.cmd {
-            Cmd::Fetch { refs } => self.fetch(refs),
+            Cmd::Fetch { repo, refs } => self.fetch(&repo, refs),
         }
     }
 
-    fn fetch(&self, refglob: &str) -> Result<()> {
-        let all_refs = remote_list(self.repo.as_path(), &self.remote)?;
+    fn fetch(&self, repo: &RepoOpts, refglob: &str) -> Result<()> {
+        let repopath = &repo.repo;
+        let remotename = &repo.remote;
+        let all_refs = remote_list(repo.repo.as_path(), remotename)?;
         let all_refs = all_refs.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 
         let targets = glob_match_refs(&all_refs, refglob);
 
+        let all_refs_count = all_refs.len();
+        println!("Filtered {all_refs_count} refs to:");
         println!("{targets:?}");
+
+        for ostreeref in targets {
+            let status = Command::new("ostree")
+                .args([
+                    &format!("--repo={repopath}"),
+                    "pull",
+                    &format!("{remotename}:{ostreeref}"),
+                ])
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to fetch: {status:?}");
+            }
+        }
 
         Ok(())
     }
@@ -64,13 +86,22 @@ impl Opt {
 
 fn remote_list(repo: &Utf8Path, remote: &str) -> Result<Vec<String>> {
     let o = Command::new("ostree")
-        .args(["--repo", repo.as_str(), "remote", "list", remote])
+        .args([&format!("--repo={repo}"), "remote", "refs", remote])
+        .stderr(std::process::Stdio::inherit())
         .output()?;
     if !o.status.success() {
         anyhow::bail!("failed to run ostree remote list: {:?}", o.status)
     }
     let o = String::from_utf8(o.stdout)?;
-    Ok(o.lines().map(|v| v.to_string()).collect())
+    o.lines()
+        .map(|v| {
+            let name = v
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("Invalid remote line: {v}"))?
+                .1;
+            Ok(name.to_string())
+        })
+        .collect()
 }
 
 fn glob_match_refs<'a>(all_refs: &'a [&str], glob: &str) -> Vec<&'a str> {

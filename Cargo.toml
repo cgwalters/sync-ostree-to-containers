@@ -10,5 +10,6 @@ license = "MIT OR Apache-2.0"
 anyhow = "1.0.58"
 camino = "1.0.9"
 clap = { version = "3.2.16", features = ["derive"] }
+containers-image-proxy = "0.5.1"
 once_cell = "1.13.0"
 tempfile = "3.3.0"
